@@ -1,0 +1,86 @@
+name: Fetch World Cup Scores
+
+on:
+  schedule:
+    # Run every 5 minutes during tournament (Jun 11 - Jul 19 2026)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Fetch scores from football-data.org
+        env:
+          FD_API_KEY: ${{ secrets.FD_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import urllib.request, json, os, datetime
+
+          key = os.environ['FD_API_KEY']
+          base = 'https://api.football-data.org/v4'
+
+          def fetch(path):
+              req = urllib.request.Request(base + path, headers={'X-Auth-Token': key})
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  return json.loads(r.read())
+
+          # Fetch all WC matches
+          matches_data = fetch('/competitions/WC/matches')
+          matches = matches_data.get('matches', [])
+
+          # Fetch top scorers
+          scorers_data = fetch('/competitions/WC/scorers?limit=20')
+          scorers_raw = scorers_data.get('scorers', [])
+          scorers = [
+              {
+                  'player': {'name': s['player']['name']},
+                  'team': {'name': s['team']['name']},
+                  'goals': s.get('goals', 0),
+                  'assists': s.get('assists', 0)
+              }
+              for s in scorers_raw
+          ]
+
+          # Build output — only include fields the tracker needs
+          output = {
+              'lastUpdated': datetime.datetime.utcnow().isoformat() + 'Z',
+              'matches': [
+                  {
+                      'status': m['status'],
+                      'stage': m.get('stage', ''),
+                      'matchday': m.get('matchday'),
+                      'homeTeam': {'name': m['homeTeam']['name']},
+                      'awayTeam': {'name': m['awayTeam']['name']},
+                      'score': {
+                          'fullTime': m['score']['fullTime']
+                      }
+                  }
+                  for m in matches
+              ],
+              'scorers': scorers
+          }
+
+          with open('data.json', 'w') as f:
+              json.dump(output, f)
+
+          finished = sum(1 for m in matches if m['status'] == 'FINISHED')
+          live = sum(1 for m in matches if m['status'] in ['IN_PLAY', 'PAUSED'])
+          print(f"Fetched {len(matches)} matches ({finished} finished, {live} live), {len(scorers)} scorers")
+          EOF
+
+      - name: Commit and push data.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          # Only commit if data.json actually changed
+          if git diff --staged --quiet; then
+            echo "No changes to data.json, skipping commit"
+          else
+            git commit -m "Update scores $(date -u '+%H:%M UTC')"
+            git push
+          fi
