@@ -82,5 +82,6 @@ jobs:
             echo "No changes to data.json, skipping commit"
           else
             git commit -m "Update scores $(date -u '+%H:%M UTC')"
+            git pull --rebase origin main
             git push
           fi
